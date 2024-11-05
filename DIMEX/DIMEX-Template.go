@@ -22,6 +22,7 @@ package DIMEX
 import (
 	PP2PLink "SD/PP2PLink"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -44,6 +45,13 @@ const (
 
 type dmxResp struct { // mensagem do módulo DIMEX infrmando que pode acessar - pode ser somente um sinal (vazio)
 	// mensagem para aplicacao indicando que pode prosseguir
+}
+
+func customMax(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type DIMEX_Module struct {
@@ -141,7 +149,27 @@ func (module *DIMEX_Module) handleUponReqEntry() {
 		   		forall processes q != p
 		       		manda msg [ pl , Send | q, [ reqEntry, id, reqTs ]
 		   		st := wantMX
+
+		Req       chan dmxReq  // canal para receber pedidos da aplicacao (REQ e EXIT)
+		Ind       chan dmxResp // canal para informar aplicacao que pode acessar
+		processes []string     // endereco de todos, na mesma ordem
+		id        int          // identificador do processo - é o indice no array de enderecos acima
+		st        State        // estado deste processo na exclusao mutua distribuida
+		waiting   []bool       // processos aguardando tem flag true
+		lcl       int          // relogio logico local
+		reqTs     int          // timestamp local da ultima requisicao deste processo
+		nbrResps  int
+		dbg       bool
 	*/
+	module.lcl++
+	module.reqTs = module.lcl
+	module.nbrResps = 0
+	for i := 0; i < len(module.processes); i++ {
+		if i != module.id {
+			module.sendToLink(module.processes[i], fmt.Sprintf("reqEntry;%d;%d", module.id, module.lcl), module.processes[module.id])
+		}
+	}
+	module.st = wantMX
 }
 
 func (module *DIMEX_Module) handleUponReqExit() {
@@ -152,6 +180,12 @@ func (module *DIMEX_Module) handleUponReqExit() {
 		   			waiting := {}
 					st := noMX
 	*/
+	for i := 0; i < len(module.processes); i++ {
+		if i != module.id {
+			module.sendToLink(module.processes[i], fmt.Sprintf("respOK;%d;%d", module.id, module.lcl), module.processes[module.id])
+		}
+	}
+	module.st = noMX
 }
 
 // ------------------------------------------------------------------------------------
@@ -168,6 +202,12 @@ func (module *DIMEX_Module) handleUponDeliverRespOk(msgOutro PP2PLink.PP2PLink_I
 		    		then gera evento [ dmx, Deliver | resp ]
 		             	 st := inMX
 	*/
+	fmt.Printf("Recebi o ok")
+	module.nbrResps++
+	if module.nbrResps == len(module.processes)-1 {
+		module.Ind <- dmxResp{}
+		module.st = inMX
+	}
 }
 
 func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink_Ind_Message) {
@@ -182,6 +222,26 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 		        		// then   waiting := waiting + [ q ]     else  // empty
 		     	   lcl := max(lcl, rts)
 	*/
+	payload := strings.Split(msgOutro.Message, ";")
+
+	senderId, err := strconv.Atoi(payload[1])
+	if err != nil {
+		// Tratar erro de conversão
+		return
+	}
+	senderTs, err := strconv.Atoi(payload[2])
+	if err != nil {
+		// Tratar erro de conversão
+		return
+	}
+
+	if (module.st == noMX) || (module.st == wantMX && !before(module.id, module.reqTs, senderId, senderTs)) {
+		module.sendToLink(module.processes[senderId], fmt.Sprintf("respOK;%d;%d", module.id, module.reqTs), module.processes[module.id])
+		fmt.Printf("Enviei OK para o %d", senderId)
+	} else {
+
+	}
+	module.lcl = customMax(module.reqTs, senderTs)
 }
 
 // ------------------------------------------------------------------------------------
